@@ -206,6 +206,7 @@ if __name__ == '__main__':
             cnt_lst = [0 for _ in range(CLS_CNT)]
             for idx in range(len(ordered_index)):
                 if cnt_lst[ordered_label[idx]] < MINIMUM_CNT:
+                    cnt_lst[ordered_label[idx]] += 1
                     labeled_set.append(ordered_index[idx])
             unlabeled_set = list(set(unlabeled_set) - set(labeled_set))
 
