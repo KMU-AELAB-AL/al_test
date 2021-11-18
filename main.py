@@ -132,7 +132,7 @@ def get_uncertainty(models, unlabeled_loader, criterion):
     models['module'].eval()
 
     uncertainty = torch.tensor([]).cuda()
-    label = torch.tensor([]).cuda()
+    label = torch.tensor([], dtype=torch.long).cuda()
     with torch.no_grad():
         for (inputs, labels) in unlabeled_loader:
             inputs = inputs.cuda()
