@@ -207,6 +207,7 @@ if __name__ == '__main__':
     torch.backends.cudnn.benchmark = False
 
     for cycle in range(CYCLES):
+        _criterion = nn.CrossEntropyLoss(reduction='none').cuda()
         criterion = nn.CrossEntropyLoss().cuda()
         m_criterion = nn.CosineSimilarity(dim=1, eps=1e-6).cuda()
         criterions = {'backbone': criterion, 'module': m_criterion}
@@ -236,7 +237,7 @@ if __name__ == '__main__':
                                       pin_memory=True)
 
         uncertainty, labels = get_uncertainty(models, unlabeled_loader)
-        real_uncertainty, real_labels = get_real_uncertainty(models, unlabeled_loader, criterions['backbone'])
+        real_uncertainty, real_labels = get_real_uncertainty(models, unlabeled_loader, _criterion)
 
         arg = np.argsort(uncertainty)
         selected_labels = list(torch.tensor(labels)[arg][-ADDENDUM:].numpy())
