@@ -236,7 +236,7 @@ if __name__ == '__main__':
                                       pin_memory=True)
 
         uncertainty, labels = get_uncertainty(models, unlabeled_loader)
-        real_uncertainty, real_labels = get_real_uncertainty(models, unlabeled_loader, criterion)
+        real_uncertainty, real_labels = get_real_uncertainty(models, unlabeled_loader, criterions['backbone'])
 
         arg = np.argsort(uncertainty)
         selected_labels = list(torch.tensor(labels)[arg][-ADDENDUM:].numpy())
