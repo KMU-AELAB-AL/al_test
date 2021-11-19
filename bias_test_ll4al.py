@@ -1,5 +1,7 @@
 import os
+import pickle
 import random
+from collections import Counter
 
 import torch
 import numpy as np
@@ -168,75 +170,75 @@ def get_real_uncertainty(models, unlabeled_loader, criterion):
 
 
 if __name__ == '__main__':
-    for trial in range(TRIALS):
-        fp = open(f'record_{trial + 1}.txt', 'w')
+    indices = list(range(NUM_TRAIN))
+    random.shuffle(indices)
+    labeled_set = indices[:INIT_CNT]
+    unlabeled_set = indices[INIT_CNT:]
 
-        indices = list(range(NUM_TRAIN))
-        random.shuffle(indices)
-        labeled_set = indices[:INIT_CNT]
-        unlabeled_set = indices[INIT_CNT:]
+    train_loader = DataLoader(data_train, batch_size=BATCH,
+                              sampler=SubsetRandomSampler(labeled_set),
+                              pin_memory=True)
+    test_loader = DataLoader(data_test, batch_size=BATCH)
+    dataloaders = {'train': train_loader, 'test': test_loader}
 
-        train_loader = DataLoader(data_train, batch_size=BATCH,
-                                  sampler=SubsetRandomSampler(labeled_set),
-                                  pin_memory=True)
-        test_loader = DataLoader(data_test, batch_size=BATCH)
-        dataloaders = {'train': train_loader, 'test': test_loader}
+    loss_module = LossNet().cuda()
+    resnet18 = ResNet18(num_classes=CLS_CNT).cuda()
+    models = {'backbone': resnet18, 'module': loss_module}
 
-        loss_module = LossNet().cuda()
-        resnet18 = ResNet18(num_classes=CLS_CNT).cuda()
-        models = {'backbone': resnet18, 'module': loss_module}
+    torch.backends.cudnn.benchmark = False
 
-        torch.backends.cudnn.benchmark = False
+    for cycle in range(CYCLES):
+        criterion = nn.CrossEntropyLoss(reduction='none').cuda()
 
-        for cycle in range(CYCLES):
-            criterion = nn.CrossEntropyLoss(reduction='none').cuda()
+        optim_backbone = optim.SGD(models['backbone'].parameters(), lr=LR,
+                                   momentum=MOMENTUM, weight_decay=WDECAY)
+        optim_module = optim.SGD(models['module'].parameters(), lr=LR,
+                                 momentum=MOMENTUM, weight_decay=WDECAY)
+        optimizers = {'backbone': optim_backbone, 'module': optim_module}
 
-            optim_backbone = optim.SGD(models['backbone'].parameters(), lr=LR,
-                                       momentum=MOMENTUM, weight_decay=WDECAY)
-            optim_module = optim.SGD(models['module'].parameters(), lr=LR,
-                                     momentum=MOMENTUM, weight_decay=WDECAY)
-            optimizers = {'backbone': optim_backbone, 'module': optim_module}
+        sched_backbone = lr_scheduler.MultiStepLR(optim_backbone, milestones=MILESTONES)
+        sched_module = lr_scheduler.MultiStepLR(optim_module, milestones=MILESTONES)
+        schedulers = {'backbone': sched_backbone, 'module': sched_module}
 
-            sched_backbone = lr_scheduler.MultiStepLR(optim_backbone, milestones=MILESTONES)
-            sched_module = lr_scheduler.MultiStepLR(optim_module, milestones=MILESTONES)
-            schedulers = {'backbone': sched_backbone, 'module': sched_module}
+        train(models, criterion, optimizers, schedulers, dataloaders, EPOCH, EPOCHL)
+        acc = test(models, dataloaders, mode='test')
+        train_acc = test(models, dataloaders, mode='train')
 
-            train(models, criterion, optimizers, schedulers, dataloaders, EPOCH, EPOCHL)
-            acc = test(models, dataloaders, mode='test')
-            train_acc = test(models, dataloaders, mode='train')
+        print('Trial {}/{} || Cycle {}/{} || Label set size {}: Test acc {}: Train acc {}'.format(trial + 1,
+                                                                                                  TRIALS, cycle + 1,
+                                                                                                  CYCLES,
+                                                                                                  len(labeled_set),
+                                                                                                  acc, train_acc))
 
-            fp.write(f'{acc}\n')
+        random.shuffle(unlabeled_set)
+        subset = unlabeled_set[:]
 
-            print('Trial {}/{} || Cycle {}/{} || Label set size {}: Test acc {}: Train acc {}'.format(trial + 1,
-                                                                                                      TRIALS, cycle + 1,
-                                                                                                      CYCLES,
-                                                                                                      len(labeled_set),
-                                                                                                      acc, train_acc))
+        unlabeled_loader = DataLoader(data_unlabeled, batch_size=BATCH,
+                                      sampler=SubsetSequentialSampler(subset),
+                                      pin_memory=True)
 
-            random.shuffle(unlabeled_set)
-            subset = unlabeled_set[:]
+        uncertainty, labels = get_uncertainty(models, unlabeled_loader)
+        real_uncertainty, real_labels = get_real_uncertainty(models, unlabeled_loader, criterion)
 
-            unlabeled_loader = DataLoader(data_unlabeled, batch_size=BATCH,
-                                          sampler=SubsetSequentialSampler(subset),
+        arg = np.argsort(uncertainty)
+        selected_labels = list(torch.tensor(labels)[arg][-ADDENDUM:].numpy())
+        selected_samples = list(torch.tensor(subset)[arg][-ADDENDUM:].numpy())
+        selected_label_cnt = Counter(selected_labels)
+
+        real_arg = np.argsort(real_uncertainty)
+        real_labels = list(torch.tensor(real_labels)[real_arg][-5000:].numpy())
+        real_samples = list(torch.tensor(subset)[real_arg][-5000:].numpy())
+        real_label_cnt = Counter(real_labels)
+
+        with open(f'data_{cycle}.txt', 'wb') as f:
+            pickle.dump({'samples': selected_samples, 'label_cnt': selected_label_cnt,
+                         'real_samples': real_samples, 'real_label_cnt': real_label_cnt}, f)
+
+        labeled_set += selected_samples
+        unlabeled_set = list(torch.tensor(subset)[arg][:-ADDENDUM].numpy())
+
+        print(len(set(labeled_set)), len(set(unlabeled_set)))
+
+        dataloaders['train'] = DataLoader(data_train, batch_size=BATCH,
+                                          sampler=SubsetRandomSampler(labeled_set),
                                           pin_memory=True)
-
-            uncertainty, labels = get_uncertainty(models, unlabeled_loader)
-            real_uncertainty, real_labels = get_real_uncertainty(models, unlabeled_loader, criterion)
-
-            arg = np.argsort(uncertainty)
-            selected_labels = list(torch.tensor(labels)[arg][-ADDENDUM:].numpy())
-            selected_samples = list(torch.tensor(subset)[arg][-ADDENDUM:].numpy())
-
-            real_arg = np.argsort(real_uncertainty)
-            real_labels = list(torch.tensor(real_labels)[real_arg][-5000:].numpy())
-            real_samples = list(torch.tensor(subset)[real_arg][-5000:].numpy())
-
-            labeled_set += selected_samples
-            unlabeled_set = list(torch.tensor(subset)[arg][:-ADDENDUM].numpy())
-
-            print(len(set(labeled_set)), len(set(unlabeled_set)))
-
-            dataloaders['train'] = DataLoader(data_train, batch_size=BATCH,
-                                              sampler=SubsetRandomSampler(labeled_set),
-                                              pin_memory=True)
-        fp.close()
