@@ -227,7 +227,7 @@ if __name__ == '__main__':
         real_samples = list(torch.tensor(subset)[real_arg][-5000:].numpy())
         real_label_cnt = Counter(real_labels)
 
-        with open(f'data_{cycle}.txt', 'wb') as f:
+        with open(f'data_{cycle}.pkl', 'wb') as f:
             pickle.dump({'samples': selected_samples, 'label_cnt': selected_label_cnt,
                          'real_samples': real_samples, 'real_label_cnt': real_label_cnt}, f)
 
