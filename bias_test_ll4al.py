@@ -138,6 +138,7 @@ def get_uncertainty(models, unlabeled_loader):
     with torch.no_grad():
         for (inputs, labels) in unlabeled_loader:
             inputs = inputs.cuda()
+            labels = labels.cuda()
 
             scores, features = models['backbone'](inputs)
             pred_loss = models['module'](features)
