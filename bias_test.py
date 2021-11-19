@@ -1,4 +1,6 @@
 import os
+import pickle
+from collections import Counter
 import random
 
 import torch
@@ -136,9 +138,11 @@ def get_uncertainty(models, unlabeled_loader):
     models['ae'].eval()
 
     uncertainty = torch.tensor([]).cuda()
+    label = torch.tensor([], dtype=torch.long).cuda()
     with torch.no_grad():
         for (inputs, labels) in unlabeled_loader:
             inputs = inputs.cuda()
+            labels = labels.cuda()
 
             _, features = models['backbone'](inputs)
             pred_feature = models['module'](features)
@@ -149,8 +153,29 @@ def get_uncertainty(models, unlabeled_loader):
             loss = torch.mean((pred_feature - ae_out[1].detach()) ** 2, dim=1)
 
             uncertainty = torch.cat((uncertainty, loss), 0)
+            label = torch.cat((label, labels), 0)
 
-    return uncertainty.cpu()
+    return uncertainty.cpu(), label.cpu()
+
+
+def get_real_uncertainty(models, unlabeled_loader, criterion):
+    models['backbone'].eval()
+    models['module'].eval()
+
+    uncertainty = torch.tensor([]).cuda()
+    label = torch.tensor([], dtype=torch.long).cuda()
+    with torch.no_grad():
+        for (inputs, labels) in unlabeled_loader:
+            inputs = inputs.cuda()
+            labels = labels.cuda()
+
+            scores, features = models['backbone'](inputs)
+            target_loss = criterion(scores, labels)
+
+            uncertainty = torch.cat((uncertainty, target_loss), 0)
+            label = torch.cat((label, labels), 0)
+
+    return uncertainty.cpu(), label.cpu()
 
 
 if __name__ == '__main__':
@@ -159,66 +184,73 @@ if __name__ == '__main__':
     target_module.load_state_dict(checkpoint['ae_state_dict'])
     target_module.cuda()
 
-    for trial in range(TRIALS):
-        fp = open(f'record_{trial + 1}.txt', 'w')
 
-        indices = list(range(NUM_TRAIN))
-        random.shuffle(indices)
-        labeled_set = indices[:INIT_CNT]
-        unlabeled_set = indices[INIT_CNT:]
+    indices = list(range(NUM_TRAIN))
+    random.shuffle(indices)
+    labeled_set = indices[:INIT_CNT]
+    unlabeled_set = indices[INIT_CNT:]
 
-        train_loader = DataLoader(data_train, batch_size=BATCH,
-                                  sampler=SubsetRandomSampler(labeled_set),
-                                  pin_memory=True)
-        test_loader = DataLoader(data_test, batch_size=BATCH)
-        module_train_loader = DataLoader(data_module, batch_size=BATCH,
-                                         sampler=SubsetRandomSampler(labeled_set),
-                                         pin_memory=True)
-        dataloaders = {'train': train_loader, 'test': test_loader, 'module': module_train_loader}
+    train_loader = DataLoader(data_train, batch_size=BATCH,
+                              sampler=SubsetRandomSampler(labeled_set),
+                              pin_memory=True)
+    test_loader = DataLoader(data_test, batch_size=BATCH)
+    module_train_loader = DataLoader(data_module, batch_size=BATCH,
+                                     sampler=SubsetRandomSampler(labeled_set),
+                                     pin_memory=True)
+    dataloaders = {'train': train_loader, 'test': test_loader, 'module': module_train_loader}
 
-        resnet18 = ResNet18(num_classes=CLS_CNT).cuda()
-        feature_module = FeatureNet(out_dim=EMBEDDING_DIM).cuda()
+    resnet18 = ResNet18(num_classes=CLS_CNT).cuda()
+    feature_module = FeatureNet(out_dim=EMBEDDING_DIM).cuda()
 
-        models = {'backbone': resnet18, 'module': feature_module, 'ae': target_module}
+    models = {'backbone': resnet18, 'module': feature_module, 'ae': target_module}
 
-        torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = False
 
-        for cycle in range(CYCLES):
-            criterion = nn.CrossEntropyLoss().cuda()
-            m_criterion = nn.CosineSimilarity(dim=1, eps=1e-6).cuda()
-            criterions = {'backbone': criterion, 'module': m_criterion}
+    for cycle in range(CYCLES):
+        criterion = nn.CrossEntropyLoss().cuda()
+        m_criterion = nn.CosineSimilarity(dim=1, eps=1e-6).cuda()
+        criterions = {'backbone': criterion, 'module': m_criterion}
 
-            optim_backbone = optim.SGD(models['backbone'].parameters(), lr=LR,
-                                       momentum=MOMENTUM, weight_decay=WDECAY)
-            optim_module = optim.Adam(models['module'].parameters(), lr=1e-3)
+        optim_backbone = optim.SGD(models['backbone'].parameters(), lr=LR,
+                                   momentum=MOMENTUM, weight_decay=WDECAY)
+        optim_module = optim.Adam(models['module'].parameters(), lr=1e-3)
 
-            sched_backbone = lr_scheduler.MultiStepLR(optim_backbone, milestones=MILESTONES)
-            sched_module = lr_scheduler.ReduceLROnPlateau(optim_module, mode='min', factor=0.8, cooldown=4)
+        sched_backbone = lr_scheduler.MultiStepLR(optim_backbone, milestones=MILESTONES)
+        sched_module = lr_scheduler.ReduceLROnPlateau(optim_module, mode='min', factor=0.8, cooldown=4)
 
-            optimizers = {'backbone': optim_backbone, 'module': optim_module}
-            schedulers = {'backbone': sched_backbone, 'module': sched_module}
+        optimizers = {'backbone': optim_backbone, 'module': optim_module}
+        schedulers = {'backbone': sched_backbone, 'module': sched_module}
 
-            train(models, criterions, optimizers, schedulers, dataloaders, EPOCH)
-            acc = test(models, dataloaders, mode='test')
+        train(models, criterions, optimizers, schedulers, dataloaders, EPOCH)
+        acc = test(models, dataloaders, mode='test')
+        train_acc = test(models, dataloaders, mode='train')
 
-            fp.write(f'{acc}\n')
-            print('Trial {}/{} || Cycle {}/{} || Label set size {}: Test acc {}'.format(trial + 1, TRIALS, cycle + 1,
-                                                                                        CYCLES, len(labeled_set), acc))
+        print('Cycle {}/{} || Label set size {}: Test acc {}: Train acc {}'.format(cycle + 1, CYCLES, len(labeled_set),
+                                                                                   acc, train_acc))
 
-            random.shuffle(unlabeled_set)
-            subset = unlabeled_set[:]
+        random.shuffle(unlabeled_set)
+        subset = unlabeled_set[:]
 
-            unlabeled_loader = DataLoader(data_unlabeled, batch_size=BATCH,
-                                          sampler=SubsetSequentialSampler(subset),
+        unlabeled_loader = DataLoader(data_unlabeled, batch_size=BATCH,
+                                      sampler=SubsetSequentialSampler(subset),
+                                      pin_memory=True)
+
+        uncertainty, labels = get_uncertainty(models, unlabeled_loader)
+        real_uncertainty, real_labels = get_real_uncertainty(models, unlabeled_loader, criterion)
+
+        arg = np.argsort(uncertainty)
+        selected_labels = list(torch.tensor(labels)[arg][-ADDENDUM:].numpy())
+        selected_samples = list(torch.tensor(subset)[arg][-ADDENDUM:].numpy())
+        selected_label_cnt = Counter(selected_labels)
+
+        real_arg = np.argsort(real_uncertainty)
+        real_labels = list(torch.tensor(real_labels)[real_arg][-5000:].numpy())
+        real_samples = list(torch.tensor(subset)[real_arg][-5000:].numpy())
+        real_label_cnt = Counter(real_labels)
+
+        labeled_set += selected_samples
+        unlabeled_set = list(torch.tensor(subset)[arg][:-ADDENDUM].numpy())
+
+        dataloaders['train'] = DataLoader(data_train, batch_size=BATCH,
+                                          sampler=SubsetRandomSampler(labeled_set),
                                           pin_memory=True)
-
-            uncertainty = get_uncertainty(models, unlabeled_loader)
-
-            arg = np.argsort(uncertainty)
-
-            labeled_set += list(torch.tensor(subset)[arg][-ADDENDUM:].numpy())
-            unlabeled_set = list(torch.tensor(subset)[arg][:-ADDENDUM].numpy())
-
-            dataloaders['train'] = DataLoader(data_train, batch_size=BATCH,
-                                              sampler=SubsetRandomSampler(labeled_set),
-                                              pin_memory=True)

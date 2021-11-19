@@ -205,7 +205,8 @@ if __name__ == '__main__':
         acc = test(models, dataloaders, mode='test')
         train_acc = test(models, dataloaders, mode='train')
 
-        print('Label set size {}: Test acc {}: Train acc {}'.format(len(labeled_set), acc, train_acc))
+        print('Cycle {}/{} || Label set size {}: Test acc {}: Train acc {}'.format(cycle + 1, CYCLES, len(labeled_set),
+                                                                                   acc, train_acc))
 
         random.shuffle(unlabeled_set)
         subset = unlabeled_set[:]
